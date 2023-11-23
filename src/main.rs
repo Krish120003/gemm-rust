@@ -1,5 +1,6 @@
+use core::arch;
+use core::arch::aarch64;
 use std::array;
-
 const N: usize = 1024;
 
 fn main() {
@@ -53,8 +54,16 @@ fn main() {
         for j in 0..N {
             // lets use simd to speed up the computation
 
-            let res: [f32; N] = array::from_fn(|k| a[i][k] * b[j][k]);
-            c[i][j] = res.iter().sum();
+            // let res: [f32; N] = array::from_fn(|k| a[i][k] * b[j][k]);
+            let mut res: [f32; N] = [0.0; N];
+            unsafe {
+                // we need to convert our original into float32x2_t
+                // TODO figure out how to do this
+                // let a_ptr = a[i].as_ptr() as *const f32 as *const f32x2_t;
+
+                // core::arch::aarch64::vmul_f32();
+            }
+            // c[i][j] = res.iter().sum();
 
             // for k in 0..N {
             //     c[i][j] += a[i][k] * b[j][k];
