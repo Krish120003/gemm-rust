@@ -1,10 +1,8 @@
 #![feature(portable_simd)]
-use core::arch;
-use core::arch::aarch64;
-use std::array;
+
 use std::simd::Simd;
 
-const N: usize = 1024;
+const N: usize = 2048;
 
 fn multiply_vector_size4(v1: [f32; 4], v2: [f32; 4]) -> core::arch::aarch64::float32x4_t {
     let sv1: Simd<f32, 4> = Simd::from_array(v1);
@@ -14,6 +12,34 @@ fn multiply_vector_size4(v1: [f32; 4], v2: [f32; 4]) -> core::arch::aarch64::flo
     let archv2 = core::arch::aarch64::float32x4_t::from(sv2);
 
     unsafe { core::arch::aarch64::vmulq_f32(archv1, archv2) }
+}
+
+fn matmul(a: &Vec<Vec<f32>>, b: &Vec<Vec<f32>>, c: &mut Vec<Vec<f32>>) {
+    for i in 0..N {
+        for j in 0..N {
+            let mut acc = 0.0;
+            for chunk in (0..N).step_by(4) {
+                let a_chunk: [f32; 4] = [
+                    a[i][chunk],
+                    a[i][chunk + 1],
+                    a[i][chunk + 2],
+                    a[i][chunk + 3],
+                ];
+                let b_chunk: [f32; 4] = [
+                    b[j][chunk],
+                    b[j][chunk + 1],
+                    b[j][chunk + 2],
+                    b[j][chunk + 3],
+                ];
+
+                let vres = multiply_vector_size4(a_chunk, b_chunk);
+                // https://doc.rust-lang.org/core/arch/aarch64/fn.vaddvq_f32.html
+                let res = unsafe { core::arch::aarch64::vaddvq_f32(vres) };
+                acc += res;
+            }
+            c[i][j] = acc;
+        }
+    }
 }
 
 fn main() {
@@ -62,32 +88,7 @@ fn main() {
 
     let start_time = std::time::Instant::now();
 
-    // matrix multiplication
-    for i in 0..N {
-        for j in 0..N {
-            let mut acc = 0.0;
-            for chunk in (0..N).step_by(4) {
-                let a_chunk: [f32; 4] = [
-                    a[i][chunk],
-                    a[i][chunk + 1],
-                    a[i][chunk + 2],
-                    a[i][chunk + 3],
-                ];
-                let b_chunk: [f32; 4] = [
-                    b[j][chunk],
-                    b[j][chunk + 1],
-                    b[j][chunk + 2],
-                    b[j][chunk + 3],
-                ];
-
-                let vres = multiply_vector_size4(a_chunk, b_chunk);
-                // https://doc.rust-lang.org/core/arch/aarch64/fn.vaddvq_f32.html
-                let res = unsafe { core::arch::aarch64::vaddvq_f32(vres) };
-                acc += res;
-            }
-            c[i][j] = acc;
-        }
-    }
+    matmul(&a, &b, &mut c);
 
     let end_time = std::time::Instant::now();
     let duration = end_time.duration_since(start_time);
