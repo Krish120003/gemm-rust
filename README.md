@@ -16,6 +16,6 @@ These performance numbers are for a 1024x1024 matrix multiplication on a 10 Core
 Both Numpy and Rust are limited to a single core to compare performance.
 
 Numpy: 72.3 GFLOP/s \
-Rust: 0.95 GFLOP/s
+Rust: 3.70 GFLOP/s
 
 (Long way to go!)
