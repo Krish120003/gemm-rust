@@ -6,7 +6,7 @@ import numpy as np
 import time
 
 
-N = 1024
+N = 2048
 
 A = np.random.rand(N, N).astype(np.float32)
 B = np.random.rand(N, N).astype(np.float32)
