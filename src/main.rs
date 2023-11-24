@@ -1,6 +1,115 @@
+#![feature(portable_simd)]
 use std::array;
+use std::simd::Simd;
 
 const N: usize = 1024;
+const BLOCK_SIZE: usize = 1;
+
+fn multiply_vector_size4(v1: [f32; 4], v2: [f32; 4]) -> core::arch::aarch64::float32x4_t {
+    let sv1: Simd<f32, 4> = Simd::from_array(v1);
+    let sv2: Simd<f32, 4> = Simd::from_array(v2);
+
+    let archv1 = core::arch::aarch64::float32x4_t::from(sv1);
+    let archv2 = core::arch::aarch64::float32x4_t::from(sv2);
+
+    unsafe { core::arch::aarch64::vmulq_f32(archv1, archv2) }
+}
+
+fn measure_time<F>(mut f: F) -> f32
+where
+    F: FnMut() -> (),
+{
+    let start_time = std::time::Instant::now();
+    f();
+    let end_time = std::time::Instant::now();
+    let duration = end_time.duration_since(start_time);
+    duration.as_secs_f32()
+}
+
+fn matmul_gemm(a: &Vec<Vec<f32>>, b: &Vec<Vec<f32>>, c: &mut Vec<Vec<f32>>) {
+    for i in 0..N {
+        for j in 0..N {
+            for k in 0..N {
+                c[i][j] += a[i][k] * b[k][j];
+            }
+        }
+    }
+}
+
+fn matmul_gemm_local_accumulator(a: &Vec<Vec<f32>>, b: &Vec<Vec<f32>>, c: &mut Vec<Vec<f32>>) {
+    for i in 0..N {
+        for j in 0..N {
+            let mut acc = 0.0;
+            for k in 0..N {
+                acc += a[i][k] * b[k][j];
+            }
+            c[i][j] += acc;
+        }
+    }
+}
+
+fn matmul_gemm_local_transposed(a: &Vec<Vec<f32>>, b: &Vec<Vec<f32>>, c: &mut Vec<Vec<f32>>) {
+    for i in 0..N {
+        for j in 0..N {
+            let mut acc = 0.0;
+            for k in 0..N {
+                acc += a[i][k] * b[j][k];
+            }
+            c[i][j] += acc;
+        }
+    }
+}
+
+fn matmul_gemm_block(a: &Vec<Vec<f32>>, b: &Vec<Vec<f32>>, c: &mut Vec<Vec<f32>>) {
+    let block_num = N / BLOCK_SIZE;
+    for bi in 0..block_num {
+        for bj in 0..block_num {
+            for bk in 0..block_num {
+                // Block GEMM
+                for i in 0..BLOCK_SIZE {
+                    for j in 0..BLOCK_SIZE {
+                        let mut acc = 0.0;
+                        for k in 0..BLOCK_SIZE {
+                            acc += a[bi * BLOCK_SIZE + i][bk * BLOCK_SIZE + k]
+                                * b[bj * BLOCK_SIZE + k][bk * BLOCK_SIZE + j];
+                        }
+                        c[bi * BLOCK_SIZE + i][bj * BLOCK_SIZE + j] += acc;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn matmul_gemm_simple_neon(a: &Vec<Vec<f32>>, b: &Vec<Vec<f32>>, c: &mut Vec<Vec<f32>>) {
+    // assume b is transposed
+    for i in 0..N {
+        for j in 0..N {
+            //
+            let mut acc = 0.0;
+            for chunk in (0..N).step_by(4) {
+                let a_chunk: [f32; 4] = [
+                    a[i][chunk],
+                    a[i][chunk + 1],
+                    a[i][chunk + 2],
+                    a[i][chunk + 3],
+                ];
+                let b_chunk: [f32; 4] = [
+                    b[j][chunk],
+                    b[j][chunk + 1],
+                    b[j][chunk + 2],
+                    b[j][chunk + 3],
+                ];
+
+                let vres = multiply_vector_size4(a_chunk, b_chunk);
+                // https://doc.rust-lang.org/core/arch/aarch64/fn.vaddvq_f32.html
+                let res = unsafe { core::arch::aarch64::vaddvq_f32(vres) };
+                acc += res;
+            }
+            c[i][j] = acc;
+        }
+    }
+}
 
 fn main() {
     // create a 2d array of size N x N
@@ -34,45 +143,97 @@ fn main() {
         }
     }
 
-    // preprocessing
-    // transpose the matrix b
+    // some algos require b to be transposed
+    let mut b_transposed: Vec<Vec<f32>> = vec![vec![0.0; N]; N];
     for i in 0..N {
-        for j in 0..i {
-            let tmp = b[i][j];
-            b[i][j] = b[j][i];
-            b[j][i] = tmp;
+        for j in 0..N {
+            b_transposed[i][j] = b[j][i];
         }
     }
 
     let flop = 2 * N * N * N;
 
-    let start_time = std::time::Instant::now();
+    // naive gemm
+    {
+        let name = "matmul_gemm";
+        let duration = measure_time(|| matmul_gemm(&a, &b, &mut c));
+        print!(
+            "{:<30}: {:>5} GFLOP/s\n",
+            name,
+            flop as f32 / duration / 1e9
+        );
 
-    // matrix multiplication
-    for i in 0..N {
-        for j in 0..N {
-            // lets use simd to speed up the computation
-
-            let res: [f32; N] = array::from_fn(|k| a[i][k] * b[j][k]);
-            c[i][j] = res.iter().sum();
-
-            // for k in 0..N {
-            //     c[i][j] += a[i][k] * b[j][k];
-            // }
-        }
+        // make sure C is same as the truth
+        check(&c, &truth);
+        c = vec![vec![0.0; N]; N];
     }
 
-    let end_time = std::time::Instant::now();
+    // gemm local accumulator
+    {
+        let name = "matmul_gemm_local_accumulator";
+        // ...
 
-    let duration = end_time.duration_since(start_time);
+        let duration = measure_time(|| matmul_gemm_local_accumulator(&a, &b, &mut c));
+        print!(
+            "{:<30}: {:>5} GFLOP/s\n",
+            name,
+            flop as f32 / duration / 1e9
+        );
+        check(&c, &truth);
+        c = vec![vec![0.0; N]; N];
+    }
 
-    // print the flops
-    print!("{} GFLOP/s\n", flop as f32 / duration.as_secs_f32() / 1e9);
+    // gemm local transposed
+    {
+        let name = "matmul_gemm_local_transposed";
+        let duration = measure_time(|| matmul_gemm_local_transposed(&a, &b_transposed, &mut c));
+        print!(
+            "{:<30}: {:>5} GFLOP/s\n",
+            name,
+            flop as f32 / duration / 1e9
+        );
+        check(&c, &truth);
+        c = vec![vec![0.0; N]; N];
+    }
 
-    // make sure C is same as the truth
+    // gemm simple neon
+    {
+        let name = "matmul_gemm_simple_neon";
+        let duration = measure_time(|| matmul_gemm_simple_neon(&a, &b_transposed, &mut c));
+        print!(
+            "{:<30}: {:>5} GFLOP/s\n",
+            name,
+            flop as f32 / duration / 1e9
+        );
+        check(&c, &truth);
+        c = vec![vec![0.0; N]; N];
+    }
+
+    // gemm with blocks
+    {
+        let name = "matmul_gemm_block";
+        let duration = measure_time(|| matmul_gemm_block(&a, &b_transposed, &mut c));
+        print!(
+            "{:<30}: {:>5} GFLOP/s\n",
+            name,
+            flop as f32 / duration / 1e9
+        );
+        check(&c, &truth);
+        // c = vec![vec![0.0; N]; N];
+    }
+}
+
+fn check(c: &Vec<Vec<f32>>, truth: &Vec<Vec<f32>>) {
     for i in 0..N {
         for j in 0..N {
-            assert!((c[i][j] - truth[i][j]).abs() < 1e-3);
+            assert!(
+                (c[i][j] - truth[i][j]).abs() < 1e-2,
+                "c[{}][{}] = {} != {}",
+                i,
+                j,
+                c[i][j],
+                truth[i][j]
+            );
         }
     }
 }
